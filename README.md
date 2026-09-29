@@ -2,22 +2,23 @@
 
 > **Your AI-powered blood glucose companion and meal analyzer.**
 
-GlucoSnap is an interactive, multimodal health assistant designed to help individuals understand their blood glucose readings, analyze food choices, and estimate glycemic impact. Powered by **Google Gemini** and **Streamlit**, with instant daily summaries delivered directly to **WhatsApp via Twilio**.
+GlucoSnap is an interactive, multimodal health assistant built with **Streamlit** and **Google Gemini**. It helps users track and understand blood glucose readings, analyzes meal photos to estimate carbohydrates, calories, and macronutrients, and delivers detailed daily summaries directly via **Gmail** and **Telegram**.
 
 ---
 
 ## 🌟 Key Features
 
-- **📸 Multimodal Meal Analysis**: Upload photos of your meals to receive instant estimates for:
-  - Food & ingredient breakdown
+- **📸 Multimodal Meal Analysis**: Upload food photos (`.jpg`, `.jpeg`, `.png`) to receive instant estimates for:
+  - Ingredients and food breakdown
   - Estimated Carbohydrates & Calories
   - Macronutrients (Protein, Fat)
   - Potential blood glucose impact (Lower, Moderate, or Higher impact)
   - Practical suggestions to make meals more glucose-friendly
-- **🩸 Glucose Context & Tracking**: Log and discuss blood glucose readings across different contexts (fasting, pre-meal, post-prandial, random) with simple, educational explanations.
-- **📲 One-Click WhatsApp Summaries**: Generate a concise, WhatsApp-optimized summary of your logged meals, glucose readings, and dietary patterns, and send it straight to your phone.
-- **🛡️ Built-in Safety Guardrails**: Follows strict safety rules—focusing on nutrition education and habit awareness without diagnosing conditions or prescribing medical dosages.
-- **⚡ Error & Rate-Limit Handling**: Gracefully handles Gemini API rate limits and connection issues with intuitive user feedback.
+- **🩸 Glucose Context & Tracking**: Log and discuss blood glucose readings across different contexts (fasting, pre-meal, post-meal, random) with simple, educational explanations.
+- **📧 Gmail Summary Delivery**: Send your complete daily nutrition and glucose recap to your email with a single click using secure Gmail SMTP.
+- **✈️ Seamless Telegram Integration**: Connect your Telegram account automatically via deep link (no manual Chat ID entry needed) and receive instant summaries in your Telegram chat.
+- **🛡️ Built-in Safety Guardrails**: Follows strict non-diagnostic guidelines—focusing on nutrition education and habit awareness without prescribing medications or replacing doctors.
+- **⚡ Rate-Limit Resilience**: Gracefully manages Gemini API rate limits (`RESOURCE_EXHAUSTED` / 429) with friendly user notifications.
 
 ---
 
@@ -34,22 +35,23 @@ GlucoSnap is an interactive, multimodal health assistant designed to help indivi
                                 |         (app.py)          |
                                 +------+--------------+-----+
                                        |              |
-                      (Multimodal Chat)|              |(WhatsApp Summary)
-                                       v              v
-               +-------------------------+          +-------------------------+
-               |   Google Gemini Model   |          |    Twilio REST API      |
-               | (gemini-3.5-flash-lite) |          |  (WhatsApp Messaging)   |
-               +-------------------------+          +-------------------------+
-                                                              |
-                                                              v
-                                                    +-------------------+
-                                                    |  User's WhatsApp  |
-                                                    +-------------------+
+                      (Multimodal Chat)|              |(Summary Delivery)
+                                       v              +--------------------+
+               +-------------------------+            |                    |
+               |   Google Gemini Model   |            v                    v
+               | (gemini-3.5-flash-lite) |    +---------------+    +---------------+
+               +-------------------------+    |  Gmail SMTP   |    | Telegram Bot  |
+                                              |  (Port 465)   |    |      API      |
+                                              +-------+-------+    +-------+-------+
+                                                      |                    |
+                                                      v                    v
+                                                User's Inbox         User's Telegram
 ```
 
 - **Frontend & UI**: [Streamlit](https://streamlit.io/)
 - **AI / LLM Engine**: [Google GenAI SDK](https://github.com/googleapis/python-genai) (`gemini-3.5-flash-lite`)
-- **Messaging Integration**: [Twilio REST API](https://www.twilio.com/docs/whatsapp) (Content Templates)
+- **Email Delivery**: Python standard library `smtplib` (Gmail SMTP over SSL)
+- **Telegram Bot**: [python-telegram-bot](https://github.com/python-telegram-bot/python-telegram-bot) (Telegram Bot API)
 - **Language**: Python 3.10+
 
 ---
@@ -59,10 +61,10 @@ GlucoSnap is an interactive, multimodal health assistant designed to help indivi
 ```text
 GlucoSnap/
 ├── .streamlit/
-│   └── secrets.toml          # API keys & Twilio configuration (local/private)
+│   └── secrets.toml          # API keys & configuration secrets (local only)
 ├── app.py                    # Main Streamlit web application & session management
 ├── prompts.py                # System instructions, welcome message, & summary prompts
-├── requirements.txt          # Python dependencies
+├── requirements.txt          # Runtime Python dependencies
 ├── .gitignore                # Git exclusions (secrets, venv, cache)
 └── README.md                 # Project documentation
 ```
@@ -75,7 +77,8 @@ GlucoSnap/
 
 - Python 3.10 or higher installed on your system
 - A [Google AI Studio API Key](https://aistudio.google.com/)
-- A [Twilio Account](https://www.twilio.com/) with WhatsApp Sandbox / Business Messaging enabled
+- A Gmail account with an [App Password](https://myaccount.google.com/apppasswords) enabled
+- A Telegram Bot created via [@BotFather](https://t.me/botfather)
 
 ### 2. Clone the Repository
 
@@ -108,25 +111,22 @@ pip install -r requirements.txt
 
 ## ⚙️ Configuration
 
-Create a `.streamlit/secrets.toml` file in the root directory:
+Create a `.streamlit/secrets.toml` file in the project root:
 
 ```toml
 # Google Gemini API Key
 GEMINI_API_KEY = "your_google_gemini_api_key_here"
 
-# Twilio WhatsApp Configuration
-TWILIO_ACCOUNT_SID = "your_twilio_account_sid_here"
-TWILIO_AUTH_TOKEN = "your_twilio_auth_token_here"
-TWILIO_WHATSAPP_FROM = "whatsapp:+14155238886"  # Example: Twilio Sandbox number
-TWILIO_CONTENT_SID = "your_twilio_content_template_sid_here"
+# Gmail SMTP Configuration
+GMAIL_ADDRESS = "your_email@gmail.com"
+GMAIL_APP_PASSWORD = "your_gmail_16_char_app_password"
+
+# Telegram Bot Configuration
+TELEGRAM_BOT_TOKEN = "your_telegram_bot_token_here"
+TELEGRAM_BOT_USERNAME = "your_telegram_bot_username"
 ```
 
-> ⚠️ **Security Warning**: Never commit `.streamlit/secrets.toml` to version control. It is already included in `.gitignore`.
-
-### Twilio Content Template Variables
-If using a Twilio Content Template with variables:
-- `{{1}}`: User Name
-- `{{2}}`: Summarized Nutrition and Glucose Insights
+> ⚠️ **Security Warning**: Never commit `.streamlit/secrets.toml` or API keys to GitHub. It is protected by `.gitignore`.
 
 ---
 
@@ -138,18 +138,21 @@ Launch the Streamlit web server:
 streamlit run app.py
 ```
 
-Once started, open your browser and navigate to `http://localhost:8501`.
+Open your browser at `http://localhost:8501`.
 
 ---
 
 ## 📖 How It Works
 
-1. **Onboarding**: Enter your name and WhatsApp number (with international country code, e.g., `+91XXXXXXXXXX`).
-2. **Chat & Inquire**:
-   - Type questions regarding blood glucose ranges, food substitutions, or general nutrition.
-   - Enter your readings (e.g., *"My fasting glucose was 110 mg/dL today"*).
-3. **Upload Meal Photos**: Use the camera/file attachment button to upload images of your food (`.jpg`, `.jpeg`, `.png`). GlucoSnap will detect the food items and estimate carbs, calories, and glucose impact.
-4. **Send to WhatsApp**: Click the **📤 Send to WhatsApp** button in the header at any time to receive a mobile summary of your session.
+1. **Onboarding**: Enter your name and email address to begin.
+2. **Connect Telegram (Optional)**: Click **Create Telegram Connection**, open the bot in Telegram, and hit **Start**. The app automatically detects your connection without requiring you to look up your chat ID.
+3. **Chat & Inquire**:
+   - Ask questions about food choices, carb counting, or blood glucose readings.
+   - Mention your readings (e.g., *"Fasting glucose was 105 mg/dL"*).
+4. **Upload Meal Photos**: Attach photos of your meals (`.jpg`, `.jpeg`, `.png`) for automated food identification and nutrition estimation.
+5. **Send Nutrition Summary**:
+   - Click **📧 Send by Email** to receive your session summary in your inbox.
+   - Click **✈️ Send by Telegram** to receive the same summary in your Telegram chat.
 
 ---
 
@@ -161,4 +164,4 @@ Once started, open your browser and navigate to `http://localhost:8501`.
 
 ## 📄 License
 
-This project is licensed under the [MIT License](LICENSE) (or your preferred license).
+This project is licensed under the [MIT License](LICENSE).

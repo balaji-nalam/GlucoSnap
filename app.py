@@ -1,9 +1,12 @@
-import json
+import asyncio
+import smtplib
+import uuid
+from email.mime.text import MIMEText
 
 import streamlit as st
 from google import genai
 from google.genai import types
-from twilio.rest import Client
+from telegram import Bot
 
 from prompts import (
     SUMMARY_REQUEST_PROMPT,
@@ -13,15 +16,10 @@ from prompts import (
 
 
 # ============================================================
-# MODEL
+# CONFIG
 # ============================================================
 
 MODEL_NAME = "gemini-3.5-flash-lite"
-
-
-# ============================================================
-# STREAMLIT CONFIG
-# ============================================================
 
 st.set_page_config(
     page_title="GlucoSnap",
@@ -31,19 +29,20 @@ st.set_page_config(
 
 
 # ============================================================
-# API KEYS / SECRETS
+# SECRETS
 # ============================================================
 
 GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
 
-TWILIO_ACCOUNT_SID = st.secrets["TWILIO_ACCOUNT_SID"]
-TWILIO_AUTH_TOKEN = st.secrets["TWILIO_AUTH_TOKEN"]
-TWILIO_WHATSAPP_FROM = st.secrets["TWILIO_WHATSAPP_FROM"]
-TWILIO_CONTENT_SID = st.secrets["TWILIO_CONTENT_SID"]
+GMAIL_ADDRESS = st.secrets["GMAIL_ADDRESS"]
+GMAIL_APP_PASSWORD = st.secrets["GMAIL_APP_PASSWORD"]
+
+TELEGRAM_BOT_TOKEN = st.secrets["TELEGRAM_BOT_TOKEN"]
+TELEGRAM_BOT_USERNAME = st.secrets["TELEGRAM_BOT_USERNAME"]
 
 
 # ============================================================
-# GEMINI CLIENT
+# GEMINI
 # ============================================================
 
 @st.cache_resource
@@ -57,36 +56,236 @@ gemini_client = get_gemini_client()
 
 
 # ============================================================
-# TWILIO CLIENT
+# EMAIL
 # ============================================================
 
-@st.cache_resource
-def get_twilio_client():
-    return Client(
-        TWILIO_ACCOUNT_SID,
-        TWILIO_AUTH_TOKEN
+def send_email(to_address, subject, body):
+
+    message = MIMEText(
+        body,
+        "plain",
+        "utf-8"
+    )
+
+    message["Subject"] = subject
+    message["From"] = GMAIL_ADDRESS
+    message["To"] = to_address
+
+    with smtplib.SMTP_SSL(
+        "smtp.gmail.com",
+        465
+    ) as server:
+
+        server.login(
+            GMAIL_ADDRESS,
+            GMAIL_APP_PASSWORD
+        )
+
+        server.send_message(message)
+
+
+# ============================================================
+# TELEGRAM
+# ============================================================
+
+async def telegram_send_async(chat_id, message):
+
+    async with Bot(
+        token=TELEGRAM_BOT_TOKEN
+    ) as bot:
+
+        await bot.send_message(
+            chat_id=chat_id,
+            text=message
+        )
+
+
+def send_telegram(chat_id, message):
+
+    max_length = 4000
+
+    chunks = [
+        message[i:i + max_length]
+        for i in range(
+            0,
+            len(message),
+            max_length
+        )
+    ]
+
+    for chunk in chunks:
+
+        asyncio.run(
+            telegram_send_async(
+                chat_id,
+                chunk
+            )
+        )
+
+
+# ============================================================
+# TELEGRAM CONNECTION
+# ============================================================
+
+async def get_telegram_updates_async():
+
+    async with Bot(
+        token=TELEGRAM_BOT_TOKEN
+    ) as bot:
+
+        updates = await bot.get_updates(
+            timeout=1,
+            allowed_updates=["message"]
+        )
+
+        return updates
+
+
+def get_telegram_updates():
+
+    return asyncio.run(
+        get_telegram_updates_async()
     )
 
 
-twilio_client = get_twilio_client()
+def create_telegram_connection():
+
+    token = uuid.uuid4().hex[:16]
+
+    st.session_state.telegram_connection_token = token
+
+    st.session_state.telegram_connected = False
+
+    return token
+
+
+def check_telegram_connection():
+
+    connection_token = (
+        st.session_state.get(
+            "telegram_connection_token"
+        )
+    )
+
+    if not connection_token:
+        return None
+
+    updates = get_telegram_updates()
+
+    for update in updates:
+
+        message = update.message
+
+        if not message:
+            continue
+
+        text = message.text or ""
+
+        expected_text = (
+            f"/start {connection_token}"
+        )
+
+        if text.strip() == expected_text:
+
+            chat_id = message.chat.id
+
+            st.session_state.telegram_chat_id = (
+                chat_id
+            )
+
+            st.session_state.telegram_connected = True
+
+            # Confirm connection
+            try:
+
+                send_telegram(
+                    chat_id,
+                    "✅ Telegram connected to GlucoSnap!\n\n"
+                    "Your nutrition summaries can now "
+                    "be sent here."
+                )
+
+            except Exception:
+                pass
+
+            return chat_id
+
+    return None
 
 
 # ============================================================
-# CHAT DISPLAY
+# GEMINI
+# ============================================================
+
+def ask_gemini(parts):
+
+    try:
+
+        if not parts:
+            return (
+                "Please send a message or "
+                "upload a meal photo."
+            )
+
+        response = (
+            st.session_state.chat.send_message(
+                parts
+            )
+        )
+
+        return response.text
+
+    except Exception as error:
+
+        error_text = str(error)
+
+        if (
+            "429" in error_text
+            or "RESOURCE_EXHAUSTED" in error_text
+            or "rate limit" in error_text.lower()
+            or "quota" in error_text.lower()
+        ):
+
+            return (
+                "⚠️ Gemini is temporarily "
+                "rate-limited.\n\n"
+                "Please wait a little and try again."
+            )
+
+        return (
+            f"Sorry, something went wrong:\n\n"
+            f"{error_text}"
+        )
+
+
+# ============================================================
+# CHAT
 # ============================================================
 
 def render_message(message):
 
-    with st.chat_message(message["role"]):
+    with st.chat_message(
+        message["role"]
+    ):
 
         if message["kind"] == "text":
-            st.write(message["content"])
+
+            st.write(
+                message["content"]
+            )
 
         elif message["kind"] == "image":
-            st.image(message["content"])
+
+            st.image(
+                message["content"]
+            )
 
 
-def add_message(role, kind, content):
+def add_message(
+    role,
+    kind,
+    content
+):
 
     st.session_state.messages.append(
         {
@@ -102,101 +301,19 @@ def add_message(role, kind, content):
 
 
 # ============================================================
-# GEMINI REQUEST
+# INITIAL STATE
 # ============================================================
 
-def ask_gemini(parts):
+if "onboarded" not in st.session_state:
+    st.session_state.onboarded = False
 
-    try:
-
-        if not parts:
-            return "Please send a message or upload a meal photo."
-
-        response = st.session_state.chat.send_message(parts)
-
-        return response.text
-
-    except Exception as error:
-
-        error_text = str(error)
-
-        # Handle Gemini rate limits
-        if (
-            "429" in error_text
-            or "RESOURCE_EXHAUSTED" in error_text
-            or "rate limit" in error_text.lower()
-            or "quota" in error_text.lower()
-        ):
-            return (
-                "⚠️ Gemini is temporarily rate-limited.\n\n"
-                "Please wait a little and try again."
-            )
-
-        return (
-            f"Sorry, something went wrong:\n\n"
-            f"{error_text}"
-        )
-
-
-# ============================================================
-# WHATSAPP TEXT CLEANING
-# ============================================================
-
-def clean_whatsapp_text(text):
-
-    if not text:
-        return "No nutrition summary available."
-
-    text = " ".join(text.split())
-
-    if len(text) > 1500:
-        return text[:1500] + "..."
-
-    return text
-
-
-# ============================================================
-# SEND WHATSAPP
-# ============================================================
-
-def send_whatsapp(to_number, user_name, summary):
-
-    try:
-
-        # Twilio Content Template:
-        # {{1}} = user name
-        # {{2}} = nutrition summary
-
-        content_variables = json.dumps(
-            {
-                "1": user_name,
-                "2": clean_whatsapp_text(summary),
-            },
-            ensure_ascii=False,
-        )
-
-        message = twilio_client.messages.create(
-            from_=TWILIO_WHATSAPP_FROM,
-            to=f"whatsapp:{to_number}",
-            content_sid=TWILIO_CONTENT_SID,
-            content_variables=content_variables,
-        )
-
-        return True, message.sid
-
-    except Exception as error:
-
-        return False, str(error)
+if "telegram_connected" not in st.session_state:
+    st.session_state.telegram_connected = False
 
 
 # ============================================================
 # ONBOARDING
 # ============================================================
-
-if "onboarded" not in st.session_state:
-
-    st.session_state.onboarded = False
-
 
 if not st.session_state.onboarded:
 
@@ -212,38 +329,43 @@ if not st.session_state.onboarded:
             "What's your name?"
         )
 
-        whatsapp_number = st.text_input(
-            "What's your WhatsApp number?",
-            placeholder="+91xxxxxxxxxx",
-            help=(
-                "Include your country code. "
-                "Example: +91XXXXXXXXXX"
-            ),
+        email_address = st.text_input(
+            "What's your email address?",
+            placeholder="you@example.com"
         )
 
         submit_button = st.form_submit_button(
-            "Submit"
+            "Continue"
         )
 
         if submit_button:
 
-            if not name or not whatsapp_number:
+            name = name.strip()
+            email_address = email_address.strip()
+
+            if not name:
 
                 st.error(
-                    "Please fill in both your name "
-                    "and WhatsApp number."
+                    "Please enter your name."
+                )
+
+            elif (
+                "@" not in email_address
+                or "." not in email_address
+            ):
+
+                st.error(
+                    "Please enter a valid email address."
                 )
 
             else:
 
-                # Save user information
                 st.session_state.name = name
 
-                st.session_state.whatsapp_number = (
-                    whatsapp_number
+                st.session_state.email_address = (
+                    email_address
                 )
 
-                # Create Gemini chat
                 st.session_state.chat = (
                     gemini_client.chats.create(
                         model=MODEL_NAME,
@@ -253,16 +375,9 @@ if not st.session_state.onboarded:
                     )
                 )
 
-                # Initialize messages
                 st.session_state.messages = []
 
-                # Mark onboarding completed
                 st.session_state.onboarded = True
-
-                st.success(
-                    f"Thanks {name}! "
-                    "You're all set to use GlucoSnap 🩸."
-                )
 
                 st.rerun()
 
@@ -270,80 +385,210 @@ if not st.session_state.onboarded:
 
 
 # ============================================================
-# MAIN CHAT INTERFACE
+# HEADER
 # ============================================================
 
-header_col, button_col = st.columns(
-    [5, 2],
-    vertical_alignment="center"
+st.title("GlucoSnap 🩸")
+
+
+# ============================================================
+# TELEGRAM CONNECTION
+# ============================================================
+
+with st.expander(
+    "✈️ Connect Telegram",
+    expanded=not st.session_state.telegram_connected
+):
+
+    if st.session_state.telegram_connected:
+
+        st.success(
+            "Telegram connected ✅"
+        )
+
+    else:
+
+        st.write(
+            "Connect Telegram once so GlucoSnap "
+            "can send your summaries there."
+        )
+
+        if st.button(
+            "🔗 Create Telegram Connection"
+        ):
+
+            token = create_telegram_connection()
+
+            telegram_link = (
+                f"https://t.me/"
+                f"{TELEGRAM_BOT_USERNAME}"
+                f"?start={token}"
+            )
+
+            st.session_state.telegram_link = (
+                telegram_link
+            )
+
+        if "telegram_link" in st.session_state:
+
+            st.link_button(
+                "1️⃣ Open Telegram Bot",
+                st.session_state.telegram_link
+            )
+
+            st.write(
+                "In Telegram, press Start. "
+                "Then come back here."
+            )
+
+            if st.button(
+                "2️⃣ Check Telegram Connection"
+            ):
+
+                try:
+
+                    chat_id = (
+                        check_telegram_connection()
+                    )
+
+                    if chat_id:
+
+                        st.success(
+                            "Telegram connected successfully! ✅"
+                        )
+
+                        st.rerun()
+
+                    else:
+
+                        st.warning(
+                            "I haven't received the "
+                            "Telegram connection yet. "
+                            "Open the bot and press Start, "
+                            "then try again."
+                        )
+
+                except Exception as error:
+
+                    st.error(
+                        f"Telegram connection failed: {error}"
+                    )
+
+
+# ============================================================
+# USER INFO
+# ============================================================
+
+telegram_status = (
+    "Connected ✅"
+    if st.session_state.telegram_connected
+    else "Not connected"
+)
+
+st.caption(
+    f"Logged in as {st.session_state.name} "
+    f"| Email: {st.session_state.email_address} "
+    f"| Telegram: {telegram_status}"
 )
 
 
 # ============================================================
-# HEADER
+# SEPARATE SEND BUTTONS
 # ============================================================
 
-with header_col:
+st.subheader("Send your nutrition summary")
 
-    st.title("GlucoSnap 🩸")
+email_col, telegram_col = st.columns(2)
+
+send_disabled = (
+    len(st.session_state.messages) < 1
+)
 
 
 # ============================================================
-# WHATSAPP BUTTON
+# EMAIL BUTTON
 # ============================================================
 
-with button_col:
-
-    send_disabled = (
-        len(st.session_state.messages) <= 1
-    )
+with email_col:
 
     if st.button(
-        "📤 Send to WhatsApp",
+        "📧 Send by Email",
         disabled=send_disabled,
-        use_container_width=True,
+        use_container_width=True
     ):
 
         with st.spinner(
-            "Summarizing your day..."
+            "Creating summary..."
         ):
 
             summary = ask_gemini(
                 [SUMMARY_REQUEST_PROMPT]
             )
 
-        success, info = send_whatsapp(
-            st.session_state.whatsapp_number,
-            st.session_state.name,
-            summary,
-        )
+        try:
 
-        if success:
+            send_email(
+                st.session_state.email_address,
+                "🩸 Your GlucoSnap Nutrition Summary",
+                summary
+            )
 
             st.success(
-                "Sent! Check your WhatsApp 📲"
+                "Email sent successfully! ✅"
             )
 
-        else:
+        except Exception as error:
 
             st.error(
-                f"Couldn't send that: {info}"
+                f"Email failed: {error}"
             )
 
 
 # ============================================================
-# USER ACCOUNT INFO
+# TELEGRAM BUTTON
 # ============================================================
 
-st.caption(
-    f"Logged in as {st.session_state.name} "
-    f"- updates go to "
-    f"{st.session_state.whatsapp_number}"
-)
+with telegram_col:
+
+    telegram_disabled = (
+        send_disabled
+        or not st.session_state.telegram_connected
+    )
+
+    if st.button(
+        "✈️ Send by Telegram",
+        disabled=telegram_disabled,
+        use_container_width=True
+    ):
+
+        with st.spinner(
+            "Creating summary..."
+        ):
+
+            summary = ask_gemini(
+                [SUMMARY_REQUEST_PROMPT]
+            )
+
+        try:
+
+            send_telegram(
+                st.session_state.telegram_chat_id,
+                summary
+            )
+
+            st.success(
+                "Telegram message sent successfully! ✅"
+            )
+
+        except Exception as error:
+
+            st.error(
+                f"Telegram failed: {error}"
+            )
 
 
 # ============================================================
-# DISPLAY EXISTING CHAT
+# CHAT HISTORY
 # ============================================================
 
 if not st.session_state.messages:
@@ -353,7 +598,7 @@ if not st.session_state.messages:
         "text",
         WELCOME_MESSAGE_TEMPLATE.format(
             name=st.session_state.name
-        ),
+        )
     )
 
 else:
@@ -373,20 +618,16 @@ user_input = st.chat_input(
     file_type=[
         "jpg",
         "jpeg",
-        "png",
-    ],
+        "png"
+    ]
 )
 
 
 # ============================================================
-# PROCESS NEW USER MESSAGE
+# PROCESS INPUT
 # ============================================================
 
 if user_input:
-
-    # --------------------------------------------------------
-    # Get uploaded photo
-    # --------------------------------------------------------
 
     photo = (
         user_input.files[0]
@@ -394,15 +635,7 @@ if user_input:
         else None
     )
 
-    # --------------------------------------------------------
-    # Get text
-    # --------------------------------------------------------
-
     text = user_input.text
-
-    # --------------------------------------------------------
-    # Gemini content
-    # --------------------------------------------------------
 
     parts = []
 
@@ -415,18 +648,16 @@ if user_input:
 
         photo_bytes = photo.getvalue()
 
-        # Display uploaded image
         add_message(
             "user",
             "image",
-            photo_bytes,
+            photo_bytes
         )
 
-        # Send image to Gemini
         parts.append(
             types.Part.from_bytes(
                 data=photo_bytes,
-                mime_type=photo.type,
+                mime_type=photo.type
             )
         )
 
@@ -440,35 +671,34 @@ if user_input:
         add_message(
             "user",
             "text",
-            text,
+            text
         )
 
         parts.append(text)
 
 
     # --------------------------------------------------------
-    # PHOTO WITHOUT TEXT
+    # PHOTO ONLY
     # --------------------------------------------------------
 
     elif photo is not None:
 
         parts.append(
             (
-                "Analyze this meal from the image. "
-                "Identify the food and estimate:\n"
+                "Analyze this meal from the image.\n\n"
+                "Identify:\n"
                 "1. What the meal contains\n"
-                "2. Calories\n"
-                "3. Protein\n"
-                "4. Carbohydrates\n"
-                "5. Fat\n\n"
-                "Clearly state that the nutrition values "
-                "are estimates."
+                "2. Estimated calories\n"
+                "3. Estimated protein\n"
+                "4. Estimated carbohydrates\n"
+                "5. Estimated fat\n\n"
+                "Clearly explain that these are estimates."
             )
         )
 
 
     # --------------------------------------------------------
-    # CALL GEMINI ONLY WHEN THERE IS INPUT
+    # GEMINI
     # --------------------------------------------------------
 
     if parts:
@@ -477,10 +707,14 @@ if user_input:
             "Crunching the numbers... 🧮"
         ):
 
-            answer = ask_gemini(parts)
+            answer = ask_gemini(
+                parts
+            )
 
         add_message(
             "assistant",
             "text",
-            answer,
+            answer
         )
+
+
