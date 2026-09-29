@@ -501,7 +501,7 @@ st.subheader("Send your nutrition summary")
 email_col, telegram_col = st.columns(2)
 
 send_disabled = (
-    len(st.session_state.messages) < 1
+    len(st.session_state.messages) <= 1
 )
 
 
